@@ -8,14 +8,17 @@ from tqdm import tqdm
 import logging
 import matplotlib.pyplot as plt
 from sklearn.metrics import roc_auc_score
+
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
+# Simple CUDA device setup as requested
+device = torch.device("cuda")
+
 def train_model(model, train_loader, val_loader, label_columns, 
                 num_epochs=25, learning_rate=0.001,
-                save_dir='predictions', checkpoint_interval=5,
-                device=None):
+                save_dir='predictions', checkpoint_interval=5):
     """
     Train the model on the provided data loaders
     
@@ -28,23 +31,27 @@ def train_model(model, train_loader, val_loader, label_columns,
         learning_rate: Learning rate for optimizer
         save_dir: Directory to save predictions and model
         checkpoint_interval: Interval (in epochs) to save predictions
-        device: Device to train on (will detect automatically if None)
-        zero_threshold: Threshold below which a vector is considered to be all zeros
     
     Returns:
         Trained model, training history (losses and metrics)
     """
     # Create directory for outputs if it doesn't exist
     os.makedirs(save_dir, exist_ok=True)
-
-    device = torch.device('cuda')
-    logger.info(f"Using device: {device}")
+    
+    # Check GPU availability
+    num_gpus = torch.cuda.device_count()
+    logger.info(f"Using {num_gpus} GPUs: {[torch.cuda.get_device_name(i) for i in range(num_gpus)]}")
+    
+    # Wrap model in DataParallel if multiple GPUs are available
+    if num_gpus > 1:
+        logger.info("Using DataParallel for multi-GPU training")
+        model = nn.DataParallel(model)
     
     # Move model to device
     model = model.to(device)
     
     # Initialize loss and optimizer
-    criterion = nn.BCEWithLogitsLoss(reduction='none').to(device)  # Changed to 'none' to handle per-sample loss
+    criterion = nn.BCEWithLogitsLoss(reduction='none').to(device)
     optimizer = optim.Adam(model.parameters(), lr=learning_rate)
     
     # Initialize tracking variables
@@ -61,12 +68,11 @@ def train_model(model, train_loader, val_loader, label_columns,
         
         progress_bar = tqdm(train_loader, desc=f"Epoch {epoch+1}/{num_epochs}")
         for batch in progress_bar:
-            # Move data to device - ensure everything is on GPU
+            # Move data to device
             inputs = batch['embedding'].to(device)
             targets = batch['labels'].to(device)
             
             # Detect all-zero vectors by checking if mean is exactly 0
-            # This will identify vectors where all elements are exactly 0
             input_means = torch.mean(inputs, dim=1)
             valid_mask = input_means != 0
             
@@ -117,9 +123,9 @@ def train_model(model, train_loader, val_loader, label_columns,
         
         with torch.no_grad():
             for batch in val_loader:
-                # Move data to device with non_blocking=True for potential speedup
-                inputs = batch['embedding'].to(device, non_blocking=True)
-                targets = batch['labels'].to(device, non_blocking=True)
+                # Move data to device
+                inputs = batch['embedding'].to(device)
+                targets = batch['labels'].to(device)
                 
                 # Detect all-zero vectors by checking if mean is exactly 0
                 input_means = torch.mean(inputs, dim=1)
@@ -185,7 +191,13 @@ def train_model(model, train_loader, val_loader, label_columns,
         if (epoch + 1) % checkpoint_interval == 0 or epoch == num_epochs - 1:
             # Save model
             model_path = os.path.join(save_dir, f'model_epoch_{epoch+1}.pth')
-            torch.save(model.state_dict(), model_path)
+            
+            # If using DataParallel, save the internal model instead
+            if isinstance(model, nn.DataParallel):
+                torch.save(model.module.state_dict(), model_path)
+            else:
+                torch.save(model.state_dict(), model_path)
+                
             logger.info(f"Checkpoint saved to {model_path}")
             
             # Save predictions
@@ -204,18 +216,25 @@ def train_model(model, train_loader, val_loader, label_columns,
             except Exception as e:
                 logger.warning(f"Error saving predictions: {e}")
     
-    # Save the final model
-    torch.save(model.state_dict(), os.path.join(save_dir, 'chest_xray_model.pth'))
-    logger.info(f"Model saved to {os.path.join(save_dir, 'chest_xray_model.pth')}")
+    # Save the final model - get original model if we used DataParallel
+    if isinstance(model, nn.DataParallel):
+        final_model = model.module
+        logger.info("Removing DataParallel wrapper for final model")
+    else:
+        final_model = model
+        
+    # Save the unwrapped model
+    torch.save(final_model.state_dict(), os.path.join(save_dir, 'chest_xray_model.pth'))
+    logger.info(f"Final model saved to {os.path.join(save_dir, 'chest_xray_model.pth')}")
     
-    # Return model and history
+    # Return the unwrapped model and history
     history = {
         'train_losses': train_losses,
         'val_losses': val_losses,
         'val_aucs': val_aucs
     }
     
-    return model, history
+    return final_model, history
 
 def plot_training_history(history, save_path=None):
     """
@@ -251,34 +270,3 @@ def plot_training_history(history, save_path=None):
         logger.info(f"Training history plot saved to {save_path}")
     else:
         plt.show()
-
-def set_gpu_environment():
-    """
-    Setup optimal GPU environment for training
-    """
-    # Check if CUDA is available
-    if not torch.cuda.is_available():
-        logger.warning("CUDA is not available. Running on CPU.")
-        return False
-    
-    # Log GPU information
-    device_count = torch.cuda.device_count()
-    logger.info(f"Found {device_count} CUDA device(s)")
-    
-    for i in range(device_count):
-        device_properties = torch.cuda.get_device_properties(i)
-        logger.info(f"GPU {i}: {device_properties.name} - {device_properties.total_memory / 1e9:.2f} GB memory")
-    
-    # Set CUDA benchmark mode for optimal performance
-    torch.backends.cudnn.benchmark = True
-    
-    # Set deterministic mode if needed for reproducibility
-    # Note: This can slow down training
-    # torch.backends.cudnn.deterministic = True
-    # torch.backends.cudnn.enabled = True
-    
-    # Set the current device
-    current_device = torch.cuda.current_device()
-    logger.info(f"Using GPU {current_device}: {torch.cuda.get_device_name(current_device)}")
-    
-    return True

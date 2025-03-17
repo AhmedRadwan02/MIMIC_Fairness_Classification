@@ -1,90 +1,108 @@
 import os
-
-os.environ['CUDA_VISIBLE_DEVICES'] = '-1'  # Force TensorFlow to CPU
-import tensorflow as tf
-
-os.environ['CUDA_VISIBLE_DEVICES'] = '0'  # Make GPU 0 visible again
-
-
+import numpy as np
+import pandas as pd
 import torch
 from torch.utils.data import Dataset
+import logging
 
-import pandas as pd
-import numpy as np
+# GPU Configuration - Make both GPUs visible to TensorFlow and PyTorch
+os.environ["CUDA_VISIBLE_DEVICES"] = "0,1"
+
+# Import TensorFlow after setting CUDA_VISIBLE_DEVICES
+import tensorflow as tf
+
+# Print GPU information to confirm visibility
+physical_devices = tf.config.list_physical_devices('GPU')
+print(f"TensorFlow sees {len(physical_devices)} GPUs: {physical_devices}")
+print(f"PyTorch sees {torch.cuda.device_count()} GPUs")
+for i in range(torch.cuda.device_count()):
+    print(f"  GPU {i}: {torch.cuda.get_device_name(i)}")
+
+# Configure TensorFlow to grow memory as needed
+for device in physical_devices:
+    try:
+        tf.config.experimental.set_memory_growth(device, True)
+        print(f"Set memory growth for {device}")
+    except RuntimeError as e:
+        print(f"Error setting memory growth: {e}")
+
+
+# Configure logging
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+logger = logging.getLogger(__name__)
+
+def load_tf_record(file_path, base_path, embedding_size=1376):
+    """
+    Load a TensorFlow record file with explicit GPU control
+    
+    Args:
+        file_path: Path to the TFRecord file
+        base_path: Base path to prepend (empty string if path is already complete)
+        embedding_size: Size of the embedding vector to expect
+    
+    Returns:
+        numpy.ndarray: Embedding values or zeros if loading fails
+    """
+    
+    full_path = file_path if not base_path else f"{base_path}/{file_path}"
+    if not os.path.exists(full_path):
+        logger.warning(f"File not found: {full_path}")
+        return np.zeros(embedding_size, dtype=np.float32)
+        
+    try:
+        # Configure dataset options with only the safe options
+        options = tf.data.Options()
+        options.experimental_optimization.apply_default_optimizations = False
+        # Remove the problematic autotune setting
+        
+        # Read the file with the specified options
+        raw_dataset = tf.data.TFRecordDataset([full_path], num_parallel_reads=1)
+        raw_dataset = raw_dataset.with_options(options)
+        
+        embedding_values = None
+        for raw_record in raw_dataset.take(1):
+            example = tf.train.Example()
+            example.ParseFromString(raw_record.numpy())
+            embedding_values = np.array(example.features.feature['embedding'].float_list.value, dtype=np.float32)
+        
+        # Explicit cleanup
+        del raw_dataset
+        
+        # Check if the embedding is empty
+        if embedding_values is None or len(embedding_values) == 0:
+            return np.zeros(embedding_size, dtype=np.float32)
+        
+        return embedding_values
+    except Exception as e:
+        logger.warning(f"Error loading embedding for {file_path}: {e}")
+        return np.zeros(embedding_size, dtype=np.float32)
 
 class MIMICDataset(Dataset):
-    """
-    A PyTorch Dataset for the MIMIC Chest X-ray data with embeddings.
-    """
-    def __init__(self, data_path, base_path="/home/ahmedyra/scratch/Dataset/", transform=None):
+    def __init__(self, data_df, base_path="home/ahmedyra/scratch/Dataset/", transform=None):
         """
+        Initialize the MIMIC dataset
+        
         Args:
-            data_path (str): Path to the pickle file containing the preprocessed data
-            base_path (str): Base path to the embeddings
-            transform (callable, optional): Optional transform to be applied on a sample
+            data_df: DataFrame containing the data (either path to pickle or DataFrame)
+            base_path: Base path to the dataset files
+            transform: Optional transforms to apply
         """
-        self.data_df = pd.read_pickle(data_path)
+        # Allow for both DataFrame and path to pickle
+        if isinstance(data_df, str):
+            self.data_df = pd.read_pickle(data_df)
+        else:
+            self.data_df = data_df
+            
         self.transform = transform
-        self.base_path = base_path
+        # Ensure base_path ends with a slash for consistent path joining
+        self.base_path = base_path if base_path.endswith('/') else f"{base_path}/"
+        
         self.labels = ['Enlarged Cardiomediastinum', 'Cardiomegaly', 'Lung Opacity',
                        'Lung Lesion', 'Edema', 'Consolidation', 'Pneumonia', 'Atelectasis',
                        'Pneumothorax', 'Pleural Effusion', 'Pleural Other', 'Fracture',
                        'Support Devices', 'No Finding']
-        self.demographic = ['gender', 'insurance', 'anchor_age', 'race']
-        
-        # Track statistics about embeddings
-        self.loaded_count = 0
-        self.error_count = 0
     
-    def debug_tf_record(self, file_path):
-        """Debug a TensorFlow record file by printing its structure"""
-        full_path = f"{self.base_path}/{file_path}"
-        if not os.path.exists(full_path):
-            print(f"File does not exist: {full_path}")
-            return None
-            
-        try:
-            raw_dataset = tf.data.TFRecordDataset(full_path)
-            for raw_record in raw_dataset.take(1):
-                example = tf.train.Example()
-                example.ParseFromString(raw_record.numpy())
-                print("Features available in TFRecord:")
-                for key in example.features.feature:
-                    feature = example.features.feature[key]
-                    if feature.HasField('float_list'):
-                        print(f"  {key}: float_list with {len(feature.float_list.value)} values")
-                    elif feature.HasField('int64_list'):
-                        print(f"  {key}: int64_list with {len(feature.int64_list.value)} values")
-                    elif feature.HasField('bytes_list'):
-                        print(f"  {key}: bytes_list with {len(feature.bytes_list.value)} values")
-                return example
-        except Exception as e:
-            print(f"Error examining TFRecord file {full_path}: {e}")
-            return None
-    
-    def __read_tf_record__(self, file_path):
-        """Read a TensorFlow record file and parse the example"""
-        full_path = f"{self.base_path}/{file_path}"
-        if not os.path.exists(full_path):
-            raise FileNotFoundError(f"File does not exist: {full_path}")
-            
-        raw_dataset = tf.data.TFRecordDataset(full_path)
-        for raw_record in raw_dataset.take(1):
-            example = tf.train.Example()
-            example.ParseFromString(raw_record.numpy())
-            return example
-            
-    def __len__(self):
-        """Return the total number of samples"""
-        return len(self.data_df)
-        
     def __getitem__(self, idx):
-        """
-        Args:
-            idx (int): Index of the sample to fetch
-        Returns:
-            dict: A dictionary containing the data sample
-        """
         if torch.is_tensor(idx):
             idx = idx.tolist()
             
@@ -93,43 +111,38 @@ class MIMICDataset(Dataset):
         
         # Get the embedding
         try:
-            example = self.__read_tf_record__(row['path'])
-            # Extract embedding values from float_list
-            embedding_values = np.array(example.features.feature['embedding'].float_list.value, dtype=np.float32)
-            self.loaded_count += 1
+            # Determine if this is a test sample (it will have age_decile instead of anchor_age)
+            is_test = 'age_decile' in row and 'anchor_age' not in row
             
-            # Check if the embedding is empty
-            if len(embedding_values) == 0:
-                print(f"Warning: Empty embedding for {row['path']}")
-                embedding_values = np.zeros(1376, dtype=np.float32)
-                self.error_count += 1
-                
+            # For test data, include the special directory
+            if is_test:
+                file_path = f"{self.base_path}generalized-image-embeddings-for-the-mimic-chest-x-ray-dataset-1.0/{row['path']}"
+                # Don't pass base_path again to load_tf_record
+                embedding_values = load_tf_record(file_path, "")
+            # Avoid duplicating the base path if it's already in the path
+            elif self.base_path in row['path']:
+                file_path = row['path']
+                embedding_values = load_tf_record(file_path, "")
+            else:
+                file_path = f"{self.base_path}{row['path']}"
+                embedding_values = load_tf_record(file_path, "")
         except Exception as e:
-            print(f"Error loading embedding for {row['path']}: {e}")
-            # Check if the file exists
-            full_path = f"{self.base_path}/{row['path']}"
-            if not os.path.exists(full_path):
-                print(f"File does not exist: {full_path}")
-                
+            logger.warning(f"Error loading embedding for {row['path']}: {e}")
             # Fallback to zeros if there's an error
             embedding_values = np.zeros(1376, dtype=np.float32)
-            self.error_count += 1
         
         # Get the labels
         labels = row[self.labels].values.astype(np.float32)
-        
-        # Get the demographic data
-        demographics = row[self.demographic].values
         
         # Create sample dictionary
         sample = {
             'embedding': torch.tensor(embedding_values, dtype=torch.float32),
             'labels': torch.tensor(labels, dtype=torch.float32),
-            'demographics': demographics,
             'gender': row['gender'],
+            'anchor_age': row.get('anchor_age', row.get('age_decile')),  # Use anchor_age if available, otherwise use age_decile
             'insurance': row['insurance'],
-            'anchor_age': row['anchor_age'],
             'race': row['race'],
+            'patient_id': row['subject_id'],
             'study_id': row['study_id'],
             'dicom_id': row['dicom_id'],
             'path': row['path']
@@ -140,52 +153,80 @@ class MIMICDataset(Dataset):
             
         return sample
     
-    def print_stats(self):
-        """Print statistics about the dataset loading"""
-        total = self.loaded_count + self.error_count
-        if total > 0:
-            success_rate = (self.loaded_count / total) * 100
-            print(f"Dataset loading stats:")
-            print(f"  Successfully loaded embeddings: {self.loaded_count}")
-            print(f"  Errors loading embeddings: {self.error_count}")
-            print(f"  Success rate: {success_rate:.2f}%")
-        else:
-            print("No embeddings have been loaded yet")
+    def __len__(self):
+        return len(self.data_df)
 
-def create_train_val_test_split(dataset, val_ratio=0.1, test_ratio=0.2, random_state=42):
+def load_and_prepare_data(train_pickle_path, test_csv_path, val_ratio=0.1, random_state=42):
     """
-    Create indices for train/validation/test split of a dataset
+    Load training data from pickle and test data from CSV, and create train/val splits
+    while ensuring no test subjects appear in train/val.
+    
+    Note: The function handles the different column names for age between train and test datasets.
+    Train data uses 'anchor_age' while test data uses 'age_decile'.
     
     Args:
-        dataset: PyTorch Dataset object
+        train_pickle_path: Path to the training data pickle file
+        test_csv_path: Path to the test data CSV file
         val_ratio: Ratio of validation set size
-        test_ratio: Ratio of test set size
         random_state: Random seed for reproducibility
     
     Returns:
-        tuple: (train_indices, val_indices, test_indices)
+        tuple: (train_df, val_df, test_df)
     """
+    # Load training data
+    train_df = pd.read_pickle(train_pickle_path)
+    
+    # Load test data
+    test_df = pd.read_csv(test_csv_path)
+    
+    # Get unique subject IDs from test set
+    test_subject_ids = set(test_df['subject_id'].unique())
+    
+    # Remove any subjects from train_df that are in the test set
+    train_df = train_df[~train_df['subject_id'].isin(test_subject_ids)]
+    
+    # Now split remaining data into train and validation
     # Set random seed for reproducibility
     np.random.seed(random_state)
     
-    # Get total size
-    dataset_size = len(dataset)
+    # Get unique subjects for train data
+    train_subjects = train_df['subject_id'].unique()
+    np.random.shuffle(train_subjects)
     
-    # Calculate sizes
-    test_size = int(dataset_size * test_ratio)
-    val_size = int(dataset_size * val_ratio)
-    train_size = dataset_size - test_size - val_size
+    # Calculate split point
+    val_size = int(len(train_subjects) * val_ratio)
+    val_subjects = train_subjects[:val_size]
+    train_subjects = train_subjects[val_size:]
     
-    # Create indices
-    indices = list(range(dataset_size))
-    np.random.shuffle(indices)
+    # Split dataframes by subject
+    val_df = train_df[train_df['subject_id'].isin(val_subjects)]
+    train_df = train_df[train_df['subject_id'].isin(train_subjects)]
     
-    # Split indices
-    train_indices = indices[:train_size]
-    val_indices = indices[train_size:train_size + val_size]
-    test_indices = indices[train_size + val_size:]
+    logger.info(f"Train set: {len(train_df)} samples, {len(train_subjects)} subjects")
+    logger.info(f"Validation set: {len(val_df)} samples, {len(val_subjects)} subjects")
+    logger.info(f"Test set: {len(test_df)} samples, {len(test_subject_ids)} subjects")
     
-    return train_indices, val_indices, test_indices
+    return train_df, val_df, test_df
+
+def create_datasets(train_df, val_df, test_df, base_path="home/ahmedyra/scratch/Dataset/", transform=None):
+    """
+    Create PyTorch Dataset objects from dataframes
+    
+    Args:
+        train_df: Training dataframe
+        val_df: Validation dataframe
+        test_df: Test dataframe
+        base_path: Base path to the dataset files
+        transform: Optional transforms to apply
+    
+    Returns:
+        tuple: (train_dataset, val_dataset, test_dataset)
+    """
+    train_dataset = MIMICDataset(train_df, base_path, transform)
+    val_dataset = MIMICDataset(val_df, base_path, transform)
+    test_dataset = MIMICDataset(test_df, base_path, transform)
+    
+    return train_dataset, val_dataset, test_dataset
 
 def get_label_columns():
     """

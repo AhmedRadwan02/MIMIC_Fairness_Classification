@@ -32,10 +32,25 @@ def save_predictions_to_csv(dataset_loader, model, device, label_columns, file_n
         'dicom_id': [],
         'gender': [],
         'insurance': [],
-        'anchor_age': [],
         'race': [],
         'path': []
     }
+
+    # Determine which age field to use based on first batch
+    sample_batch = next(iter(dataset_loader))
+    if 'anchor_age' in sample_batch:
+        age_field = 'anchor_age'
+    elif 'age_decile' in sample_batch:
+        age_field = 'age_decile'
+    elif 'age' in sample_batch:  # Add this check
+        # For test data, use age_decile as the column name
+        age_field = 'age_decile'
+    else:
+        age_field = None
+        
+    # Add appropriate age field to sample_info
+    if age_field:
+        sample_info[age_field] = []
     
     with torch.no_grad():
         for batch in dataset_loader:
@@ -47,7 +62,20 @@ def save_predictions_to_csv(dataset_loader, model, device, label_columns, file_n
             sample_info['dicom_id'].extend(batch['dicom_id'])
             sample_info['gender'].extend(batch['gender'])
             sample_info['insurance'].extend(batch['insurance'])
-            sample_info['anchor_age'].extend(batch['anchor_age'])
+            
+            # Add age information if available
+            if age_field:
+                if age_field in batch:
+                    if isinstance(batch[age_field], torch.Tensor):
+                        sample_info[age_field].extend(batch[age_field].cpu().numpy().tolist())
+                    else:
+                        sample_info[age_field].extend(batch[age_field])
+                elif 'age' in batch:  # Add this check
+                    if isinstance(batch['age'], torch.Tensor):
+                        sample_info[age_field].extend(batch['age'].cpu().numpy().tolist())
+                    else:
+                        sample_info[age_field].extend(batch['age'])
+            
             sample_info['race'].extend(batch['race'])
             sample_info['path'].extend(batch['path'])
             
@@ -195,14 +223,22 @@ def demographic_analysis(preds_df, label_columns, output_dir):
         label_columns: List of label column names
         output_dir: Directory to save results
     """
-    demographics = ['gender', 'race', 'insurance']
+    # Use whatever demographic columns are available in the DataFrame
+    potential_demographics = ['gender', 'race', 'insurance', 'anchor_age', 'age_decile']
+    demographics = [col for col in potential_demographics if col in preds_df.columns]
+    logger.info(f"Available demographic columns for analysis: {demographics}") 
     
     for demographic in demographics:
         # Skip if demographic column is not in the DataFrame
         if demographic not in preds_df.columns:
+            logger.warning(f"Demographic column '{demographic}' not found in predictions DataFrame")
             continue
             
         logger.info(f"\nAnalyzing performance by {demographic}:")
+        
+        # For age, don't try to create buckets - use as is
+        # The test data already has age_decile which is categorical
+        # and the training data anchor_age is used as-is
         
         # Create a DataFrame to store metrics by demographic group
         demo_metrics = []
@@ -215,9 +251,10 @@ def demographic_analysis(preds_df, label_columns, output_dir):
             group_df = preds_df[preds_df[demographic] == group]
             
             if len(group_df) < 10:  # Skip groups with too few samples
+                logger.info(f"  Skipping {demographic}={group} (only {len(group_df)} samples)")
                 continue
                 
-            group_metrics = {'Demographic Group': group}
+            group_metrics = {'Demographic Group': group, 'Sample Count': len(group_df)}
             
             # Calculate metrics for each label
             for label in label_columns:
@@ -235,7 +272,7 @@ def demographic_analysis(preds_df, label_columns, output_dir):
                         auc = roc_auc_score(group_df[true_col], group_df[prob_col])
                         group_metrics[f"{label}_AUC"] = auc
                     except:
-                        pass
+                        group_metrics[f"{label}_AUC"] = float('nan')
                         
                     accuracy = accuracy_score(group_df[true_col], group_df[pred_col])
                     precision = precision_score(group_df[true_col], group_df[pred_col], zero_division=0)
@@ -257,3 +294,5 @@ def demographic_analysis(preds_df, label_columns, output_dir):
             demo_file = f'{output_dir}/metrics_by_{demographic}.csv'
             demo_df.to_csv(demo_file, index=False)
             logger.info(f"Metrics by {demographic} saved to '{demo_file}'")
+        else:
+            logger.warning(f"No valid demographic groups found for {demographic}")
