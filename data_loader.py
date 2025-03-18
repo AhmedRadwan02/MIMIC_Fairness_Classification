@@ -5,7 +5,16 @@ import torch
 from torch.utils.data import Dataset
 import logging
 
-# GPU Configuration - Make both GPUs visible to TensorFlow and PyTorch
+'''
+-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+Main Idea of Code: 
+- Defines the data loading pipeline for the MIMIC Chest X-ray Dataset using PyTorch and TensorFlow. 
+- Loads & procesesses the image dataset embeddings (stored in TFRecod format) & prepares them for deep learning models by creating PyTorch dataset objects for model training.
+- Manages GPU settings. 
+-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+'''
+
+# ---- GPU Configuration - Make both GPUs visible to TensorFlow and PyTorch ----
 os.environ["CUDA_VISIBLE_DEVICES"] = "0,1"
 
 # Import TensorFlow after setting CUDA_VISIBLE_DEVICES
@@ -27,13 +36,16 @@ for device in physical_devices:
         print(f"Error setting memory growth: {e}")
 
 
-# Configure logging
+# ---- Configure logging ----
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
+
+# ---- Image Embedding Loading ----
 def load_tf_record(file_path, base_path, embedding_size=1376):
     """
-    Load a TensorFlow record file with explicit GPU control
+    Loads image embeddings from the TFRecord files.
+    Loads a TensorFlow record file with explicit GPU control.
     
     Args:
         file_path: Path to the TFRecord file
@@ -77,6 +89,8 @@ def load_tf_record(file_path, base_path, embedding_size=1376):
         logger.warning(f"Error loading embedding for {file_path}: {e}")
         return np.zeros(embedding_size, dtype=np.float32)
 
+
+# ---- Handles Dataset Samples - Loads, Reads, Retrieves, Support Transformations ----
 class MIMICDataset(Dataset):
     def __init__(self, data_df, base_path="home/ahmedyra/scratch/Dataset/", transform=None):
         """
@@ -156,6 +170,8 @@ class MIMICDataset(Dataset):
     def __len__(self):
         return len(self.data_df)
 
+
+# --- Loads, Cleans Splits dataset for Training & Validation ---
 def load_and_prepare_data(train_pickle_path, test_csv_path, val_ratio=0.1, random_state=42):
     """
     Load training data from pickle and test data from CSV, and create train/val splits
@@ -208,6 +224,8 @@ def load_and_prepare_data(train_pickle_path, test_csv_path, val_ratio=0.1, rando
     
     return train_df, val_df, test_df
 
+
+# ---- Creates Dataset Objects ----
 def create_datasets(train_df, val_df, test_df, base_path="home/ahmedyra/scratch/Dataset/", transform=None):
     """
     Create PyTorch Dataset objects from dataframes
@@ -228,6 +246,8 @@ def create_datasets(train_df, val_df, test_df, base_path="home/ahmedyra/scratch/
     
     return train_dataset, val_dataset, test_dataset
 
+
+# ---- Label Column Values ----
 def get_label_columns():
     """
     Return the list of label column names for the MIMIC chest X-ray dataset
