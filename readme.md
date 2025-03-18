@@ -96,7 +96,7 @@ The model outputs:
 - `--output-dir`: Directory to save outputs (default: "output")
 
 ### Training Parameters
-- `--batch-size`: Batch size for training and evaluation (default: 256)
+- `--batch-size`: Batch size for training and evaluation (default: 128)
 - `--num-workers`: Number of worker processes for data loading (default: 4)
 - `--epochs`: Number of epochs to train (default: 10)
 - `--learning-rate`: Learning rate for optimizer (default: 0.001)
