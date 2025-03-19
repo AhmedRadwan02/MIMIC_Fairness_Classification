@@ -4,10 +4,11 @@ import pandas as pd
 from sklearn.metrics import accuracy_score, roc_auc_score, precision_score, recall_score, f1_score
 import logging
 
-# Configure logging
+# ---- Configure Logging - Used for Tracking Predictions, Metrics, and Demographic Performance ----
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
+# --- Evaluates the Model On The Test Set and Saves The Predictions ----
 def save_predictions_to_csv(dataset_loader, model, device, label_columns, file_name):
     """
     Generate predictions and save them to a CSV file including all sample information
@@ -21,6 +22,7 @@ def save_predictions_to_csv(dataset_loader, model, device, label_columns, file_n
     
     Returns:
         Tuple of (probabilities, targets)
+          Predicted probabilities for each disease, and the ground truth labels for each disease
     """
     model.eval()
     all_outputs = []
@@ -110,6 +112,8 @@ def save_predictions_to_csv(dataset_loader, model, device, label_columns, file_n
     
     return all_probs, all_targets
 
+
+# ---- Evaluates the Model and Computes Classification Metrics ----
 def evaluate_model(model, test_loader, label_columns, device, output_dir):
     """
     Evaluate the model and generate metrics
@@ -214,6 +218,8 @@ def evaluate_model(model, test_loader, label_columns, device, output_dir):
     
     return metrics
 
+
+# ---- Measures How the Model Performs Across Demographic Groups ----
 def demographic_analysis(preds_df, label_columns, output_dir):
     """
     Analyze model performance across demographic groups
