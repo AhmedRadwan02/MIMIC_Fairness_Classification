@@ -61,7 +61,10 @@ Results from different models are compared in the analysis notebooks, with a foc
 The final TPR analysis version represents the culmination of this work, showing improved fairness across demographic groups while maintaining high predictive performance.
 
 ## Contributors
-Please see our paper for the complete list of contributors to this research project.
+- Ahmed Y. Radwan - Lassonde School of Engineering, York University, Toronto, ON, Canada (ahmedyra@yorku.ca)
+- Noor Abbas - Lassonde School of Engineering, York University, Toronto, ON, Canada (nabbas24@my.yorku.ca)
+- Claudia Farkas - Lassonde School of Engineering, York University, Toronto, ON, Canada (cfarkas8@my.yorku.ca)
+- Amir Haeri - Lassonde School of Engineering, York University, Toronto, ON, Canada (ahaeri@yorku.ca)
 
 ## License
 This project is maintained in a standard git repository with common configuration files (.gitattributes, .gitignore).
